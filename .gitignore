@@ -1,0 +1,4 @@
+sap_settings.ini
+__pycache__/
+*.pyc
+.env

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>CBP Form 7501 – Entry Summary Report</title>
+<style>
+  :root { --accent:#1F4E79; --bg:#f7f9fb; --border:#d7dee5; }
+  body { font-family: Arial, Helvetica, sans-serif; margin:0; background:var(--bg); color:#222; }
+  header { background:var(--accent); color:#fff; padding:24px 32px; }
+  header h1 { margin:0; font-size:1.6em; }
+  header p { margin:6px 0 0; font-size:0.9em; opacity:.85; }
+  main { max-width:1000px; margin:24px auto; padding:0 16px 60px; }
+  section.entry { background:#fff; border:1px solid var(--border); border-radius:8px;
+                   padding:20px 24px; margin-bottom:28px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  section.entry h2 { color:var(--accent); margin-top:0; }
+  section.entry h3 { color:var(--accent); border-bottom:2px solid var(--border); padding-bottom:4px; margin-top:28px; }
+  section.entry h4 { margin-top:18px; margin-bottom:6px; }
+  .meta { color:#666; font-size:0.85em; font-style:italic; }
+  .src { color:#888; font-weight:normal; font-size:0.8em; }
+  table.kv { border-collapse:collapse; width:100%; margin:8px 0 4px; font-size:0.92em; }
+  table.kv th, table.kv td { border:1px solid var(--border); padding:6px 10px; text-align:left; vertical-align:top; }
+  table.kv th { background:#eaf1f7; width:38%; font-weight:600; color:#333; }
+  table.kv td { background:#fff; }
+  .filter-box { margin: 16px 0; }
+  .filter-box input { padding:8px 12px; width:100%; max-width:400px; border:1px solid var(--border);
+                       border-radius:6px; font-size:0.95em; box-sizing:border-box; }
+  .hidden { display:none; }
+  footer { text-align:center; color:#888; font-size:0.8em; padding:20px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CBP Form 7501 – Entry Summary Report</h1>
+  <p>Datenquelle: cbp7501_meine.db &nbsp;•&nbsp; 1 Entry Summary-Dokument(e) &nbsp;•&nbsp;
+     erstellt am 08.06.2026 09:55</p>
+</header>
+<main>
+  <div class="filter-box">
+    <input type="text" id="filterInput" placeholder="Suchen (Entry-Nr., HTSUS, Beschreibung, ...)" oninput="filterEntries()">
+  </div>
+  
+        <section class="entry">
+          <h2>Entry Summary: U52-1652156-2</h2>
+          <p class="meta">Quelldatei: 3163955775.pdf &nbsp;•&nbsp; Seite: 22
+             &nbsp;•&nbsp; Importiert: 2026-06-08T09:48:48.090326</p>
+          <h3>Kopfdaten (Felder 1–26)</h3>
+          <table class='kv'><tr><th>1. Filer Code / Entry No.</th><td>U52-1652156-2</td></tr><tr><th>2. Entry Type</th><td>01</td></tr><tr><th>3. Summary Date</th><td>04/02/25</td></tr><tr><th>4. Surety No.</th><td>036</td></tr><tr><th>5. Bond Type</th><td>8</td></tr><tr><th>6. Port Code</th><td>3802</td></tr><tr><th>7. Entry Date</th><td>03/24/25</td></tr><tr><th>8. Importing Carrier</th><td>HUBQ HUBSN INC</td></tr><tr><th>9. Mode of Transport</th><td>30</td></tr><tr><th>10. Country of Origin</th><td>XO</td></tr><tr><th>11. Import Date</th><td>03/24/25</td></tr><tr><th>12. B/L or AWB No.</th><td>HUBQ0000210</td></tr><tr><th>13. Manufacturer ID</th><td>XOSCHCAN801STR</td></tr><tr><th>14. Exporting Country</th><td>CA</td></tr><tr><th>15. Export Date</th><td>02/27/25</td></tr><tr><th>16. I.T. No.</th><td></td></tr><tr><th>17. I.T. Date</th><td></td></tr><tr><th>18. Missing Docs</th><td></td></tr><tr><th>19. Foreign Port of Lading</th><td></td></tr><tr><th>20. U.S. Port of Unlading</th><td>3802</td></tr><tr><th>21. Location of Goods / G.O. No.</th><td>H898; BLUE WATER BRIDGE</td></tr><tr><th>22. Consignee No.</th><td>SAME</td></tr><tr><th>23. Importer No.</th><td>87-338228200</td></tr><tr><th>24. Reference No.</th><td></td></tr><tr><th>25. Ultimate Consignee Name/Address</th><td>Ult.: MI | City                 StateOH Zip</td></tr><tr><th>26. Importer of Record Name/Address</th><td>CATENSYS US INC | 901 WILSHIRE DR SUITE 560 | City TROY           StateMI Zip48084</td></tr></table>
+          <h3>Summen, Zoll & Erklärung (Felder 35–43)</h3>
+          <table class='kv'><tr><th>35. Total Entered Value ($)</th><td>19,690</td></tr><tr><th>MPF Summe</th><td>68.20</td></tr><tr><th>37. Duty</th><td>5,414.76</td></tr><tr><th>38. Tax</th><td>0.00</td></tr><tr><th>39. Other</th><td>68.20</td></tr><tr><th>40. Grand Total</th><td>5,482.96</td></tr><tr><th>41. Declarant</th><td>C. Torres as ATTY in FACT 3/24/2025</td></tr><tr><th>42. Broker/Filer Information</th><td>DACHSER USA | 2000 ARTHUR AVE UNIT B | ELK GROVE VILLAGE, IL 60007 | PHONE:1-847-806-8800</td></tr><tr><th>43. Broker/Importer File Number</th><td>Q31652156/31600159640</td></tr></table>
+          <h3>Warenpositionen (3)</h3>
+          <h4>Position 001 – OTH PRTS,ACCES,MOTOR VEHICLES <span class='src'>(main)</span></h4><table class='kv'><tr><th>Pos.-Nr.</th><td>001</td></tr><tr><th>Ursprungsland</th><td>CA</td></tr><tr><th>Programmcode</th><td>EO 25% DUTY</td></tr><tr><th>Warenbeschreibung</th><td>OTH PRTS,ACCES,MOTOR VEHICLES</td></tr><tr><th>HTSUS-Nr.</th><td>8708.99.8180</td></tr><tr><th>Bruttogewicht</th><td>416</td></tr><tr><th>Nettomenge</th><td>10050</td></tr><tr><th>Zollsatz</th><td>2.5%</td></tr><tr><th>Zollbetrag ($)</th><td>251.25</td></tr><tr><th>Eingetr. Wert ($)</th><td></td></tr><tr><th>Manifest-Menge</th><td>3960</td></tr><tr><th>Relationship</th><td>NO</td></tr><tr><th>Visa-Nr.</th><td>C517</td></tr><tr><th>MPF-Satz</th><td></td></tr><tr><th>MPF-Betrag ($)</th><td></td></tr><tr><th>Rechnungs-Nr.</th><td>001</td></tr><tr><th>Rechnungsreferenz</th><td>182189070</td></tr><tr><th>Rechnungsmenge</th><td>1</td></tr></table><h4>Position 002 – OTH PRTS,ACCES,MOTOR VEHICLES <span class='src'>(continuation_1)</span></h4><table class='kv'><tr><th>Pos.-Nr.</th><td>002</td></tr><tr><th>Ursprungsland</th><td>CA</td></tr><tr><th>Programmcode</th><td>EO 25% DUTY</td></tr><tr><th>Warenbeschreibung</th><td>OTH PRTS,ACCES,MOTOR VEHICLES</td></tr><tr><th>HTSUS-Nr.</th><td>8708.99.8180</td></tr><tr><th>Bruttogewicht</th><td>335</td></tr><tr><th>Nettomenge</th><td>6407</td></tr><tr><th>Zollsatz</th><td>2.5%</td></tr><tr><th>Zollbetrag ($)</th><td>160.18</td></tr><tr><th>Eingetr. Wert ($)</th><td></td></tr><tr><th>Manifest-Menge</th><td>6600</td></tr><tr><th>Relationship</th><td>NO</td></tr><tr><th>Visa-Nr.</th><td>C513</td></tr><tr><th>MPF-Satz</th><td></td></tr><tr><th>MPF-Betrag ($)</th><td></td></tr><tr><th>Rechnungs-Nr.</th><td></td></tr><tr><th>Rechnungsreferenz</th><td></td></tr><tr><th>Rechnungsmenge</th><td></td></tr></table><h4>Position 003 – OTH PRTS,ACCES,MOTOR VEHICLES <span class='src'>(continuation_1)</span></h4><table class='kv'><tr><th>Pos.-Nr.</th><td>003</td></tr><tr><th>Ursprungsland</th><td>CA</td></tr><tr><th>Programmcode</th><td>EO 25% DUTY</td></tr><tr><th>Warenbeschreibung</th><td>OTH PRTS,ACCES,MOTOR VEHICLES</td></tr><tr><th>HTSUS-Nr.</th><td>8708.99.8180</td></tr><tr><th>Bruttogewicht</th><td>59</td></tr><tr><th>Nettomenge</th><td>3233</td></tr><tr><th>Zollsatz</th><td>2.5%</td></tr><tr><th>Zollbetrag ($)</th><td>80.83</td></tr><tr><th>Eingetr. Wert ($)</th><td></td></tr><tr><th>Manifest-Menge</th><td>600</td></tr><tr><th>Relationship</th><td>NO</td></tr><tr><th>Visa-Nr.</th><td>C259</td></tr><tr><th>MPF-Satz</th><td></td></tr><tr><th>MPF-Betrag ($)</th><td></td></tr><tr><th>Rechnungs-Nr.</th><td>003</td></tr><tr><th>Rechnungsreferenz</th><td>182189071</td></tr><tr><th>Rechnungsmenge</th><td>1</td></tr></table>
+        </section>
+</main>
+<footer>Diese Datei wurde lokal aus Ihrer SQLite-Datenbank erzeugt. Öffnen Sie sie jederzeit erneut in Ihrem Browser, um die Daten anzusehen.
+Um aktualisierte Daten zu sehen, führen Sie das Extraktor-Skript erneut aus und erzeugen Sie diesen Report neu.</footer>
+<script>
+function filterEntries() {
+  const q = document.getElementById('filterInput').value.toLowerCase();
+  document.querySelectorAll('section.entry').forEach(sec => {
+    sec.classList.toggle('hidden', q && !sec.innerText.toLowerCase().includes(q));
+  });
+}
+</script>
+</body>
+</html>

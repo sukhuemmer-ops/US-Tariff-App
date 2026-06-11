@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 3723, in <module>
+    App(_root)
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 939, in __init__
+    self._build_import_tab()
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 1225, in _build_import_tab
+    self.drop_zone.dnd_bind("<<Drop>>", self._on_drop)
+                                        ^^^^^^^^^^^^^
+AttributeError: 'App' object has no attribute '_on_drop'

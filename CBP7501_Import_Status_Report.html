@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<title>CBP Form 7501 – Entry Summary Import</title>
+<style>
+  :root { --accent:#1F4E79; --bg:#f7f9fb; --border:#d7dee5; }
+  body { font-family: Arial, Helvetica, sans-serif; margin:0; background:var(--bg); color:#222; }
+  header { background:var(--accent); color:#fff; padding:24px 32px; }
+  header h1 { margin:0; font-size:1.6em; }
+  header p { margin:6px 0 0; font-size:0.9em; opacity:.85; }
+  main { max-width:1280px; margin:24px auto; padding:0 16px 60px; }
+  section { background:#fff; border:1px solid var(--border); border-radius:8px;
+             padding:20px 24px; margin-bottom:28px; box-shadow:0 1px 3px rgba(0,0,0,.06); }
+  section h2 { color:var(--accent); margin-top:0; border-bottom:2px solid var(--border); padding-bottom:6px; }
+  .note { background:#fff7e6; border:1px solid #f0d99a; border-radius:6px; padding:10px 14px; font-size:0.9em; }
+  .table-wrap { overflow-x:auto; margin-top:10px; }
+  table.data-table, table.status-table { border-collapse:collapse; width:100%; font-size:0.85em; white-space:nowrap; }
+  table.data-table th, table.data-table td,
+  table.status-table th, table.status-table td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
+  table.data-table th, table.status-table th { background:#1F4E79; color:#fff; position:sticky; top:0; }
+  table.data-table tr:nth-child(even) td, table.status-table tr:nth-child(even) td { background:#f3f7fa; }
+  .status-Importiert { color:#1c7c33; font-weight:600; }
+  .status-Fehler { color:#b00020; font-weight:600; }
+  .badge { display:inline-block; background:#eaf1f7; color:var(--accent); border-radius:12px;
+            padding:2px 12px; font-size:0.8em; margin-left:8px; }
+  footer { text-align:center; color:#888; font-size:0.8em; padding:20px; }
+  .drop-zone { border:2px dashed var(--accent); border-radius:8px; background:#eaf1f7; color:var(--accent);
+               text-align:center; padding:34px 20px; font-size:1.05em; cursor:pointer; transition:background .15s; }
+  .drop-zone.dragover { background:#cfe3f2; }
+  .drop-zone input[type=file] { display:none; }
+  #fileList { margin-top:14px; }
+  #fileList table { border-collapse:collapse; width:100%; font-size:0.85em; }
+  #fileList th, #fileList td { border:1px solid var(--border); padding:6px 10px; text-align:left; }
+  #fileList th { background:#1F4E79; color:#fff; }
+  #fileList tr:nth-child(even) td { background:#f3f7fa; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CBP Form 7501 – Entry Summary Import</h1>
+  <p>Datenquelle: cbp7501_meine.db &nbsp;•&nbsp;
+     erstellt am 08.06.2026 10:13</p>
+</header>
+<main>
+
+  <section>
+    <h2>PDF-Datei hochladen / auswählen</h2>
+    <p class="note">
+      Hinweis: Dieser Report ist eine reine HTML-Datei (kein Programm im Hintergrund).
+      Eine Auswahl hier liest <strong>nicht automatisch</strong> die CBP-Daten aus und schreibt
+      sie nicht in die Datenbank — der Browser darf aus Sicherheitsgründen keine Dateien auf
+      Ihrem Rechner verändern. Sie können hier lediglich PDF-Dateien auswählen, um deren
+      Name, Größe und Änderungsdatum als Vorschau zu sehen. Für den <strong>echten Import</strong>
+      in die Datenbank ziehen Sie die Datei(en) bitte per Drag &amp; Drop in die
+      Desktop-App (<code>cbp7501_app.py</code>) — dort werden sie sofort gelesen, gespeichert
+      und erscheinen anschließend auch in den Tabellen weiter unten (Report danach neu erzeugen).
+    </p>
+    <p style="margin:14px 0;">
+      <a href="file:///C:/DEV/Tariff-Database/CBP7501-Import-starten.bat" download="CBP7501-Import-starten.bat"
+         style="display:inline-block; background:var(--accent); color:#fff; text-decoration:none;
+                padding:10px 22px; border-radius:6px; font-weight:bold;">
+        ▶ Import-App öffnen (Verknüpfung herunterladen)
+      </a>
+      <br><span style="font-size:0.8em; color:#777;">
+        <strong>So funktioniert's:</strong> Klick lädt die Datei <code>CBP7501-Import-starten.bat</code> herunter
+        (nicht ausführen über den Browser-Klick selbst — der Browser zeigt Skriptdateien nur als Text an).
+        Anschließend die heruntergeladene Datei im Explorer <strong>doppelklicken</strong>, um die Import-App zu starten —
+        dort PDFs per Drag &amp; Drop hineinziehen.<br>
+        Alternativ: die Datei <code>CBP7501-Import-starten.bat</code> liegt bereits direkt im Ordner
+        <code>C:\DEV\Tariff-Database</code> — dort einfach doppelklicken (kein Download nötig).
+      </span>
+    </p>
+    <label class="drop-zone" id="dropZone" for="pdfInput">
+      📄 PDF-Datei(en) hier ablegen oder klicken, um auszuwählen 📄
+      <input type="file" id="pdfInput" accept=".pdf" multiple>
+    </label>
+    <div id="fileList"></div>
+  </section>
+
+  <section>
+    <h2>Status der verarbeiteten PDF-Dateien <span class="badge">1 Datei(en)</span></h2>
+    <p class='note'>Hinweis: Diese Datenbank wurde über die Kommandozeilen-Variante (<code>cbp7501_extractor.py</code>) befüllt, nicht über die Drag&amp;Drop-App – daher liegt kein detailliertes Verarbeitungsprotokoll (Tabelle <code>processed_files</code>) vor. Der folgende Status wurde stattdessen aus den importierten Entry-Summary-Datensätzen abgeleitet.</p>
+    <div class='table-wrap'><table class='status-table'><thead><tr><th>Datei-Name</th><th>Gelesen am</th><th>Größe</th><th>Status</th><th>Details</th></tr></thead><tbody><tr><td>3163955775.pdf</td><td>08.06.2026 09:48:48</td><td></td><td>Importiert</td><td>1 Entry Summary-Dokument(e): U52-1652156-2</td></tr></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>Datenbank-Tabelle: entries <span class="badge">1 Datensatz/Datensätze</span></h2>
+    <p>Vollständige Kopfdaten (Felder 1–26 sowie 35–43) je Entry Summary-Dokument.</p>
+    <div class='table-wrap'><table class='data-table'><thead><tr><th>id</th><th>source_file</th><th>source_page</th><th>imported_at</th><th>filer_code_entry_no</th><th>entry_type</th><th>summary_date</th><th>surety_no</th><th>bond_type</th><th>port_code</th><th>entry_date</th><th>importing_carrier</th><th>mode_of_transport</th><th>country_of_origin</th><th>import_date</th><th>bl_or_awb_no</th><th>manufacturer_id</th><th>exporting_country</th><th>export_date</th><th>it_no</th><th>it_date</th><th>missing_docs</th><th>foreign_port_of_lading</th><th>us_port_of_unlading</th><th>location_of_goods_go_no</th><th>consignee_no</th><th>importer_no</th><th>reference_no</th><th>ultimate_consignee_name_address</th><th>importer_of_record_name_address</th><th>total_entered_value</th><th>mpf_total</th><th>duty_total</th><th>tax_total</th><th>other_total</th><th>grand_total</th><th>declarant_name_title_signature_date</th><th>broker_filer_information</th><th>broker_importer_file_number</th></tr></thead><tbody><tr><td>1</td><td>3163955775.pdf</td><td>22</td><td>2026-06-08T09:48:48.090326</td><td>U52-1652156-2</td><td>01</td><td>04/02/25</td><td>036</td><td>8</td><td>3802</td><td>03/24/25</td><td>HUBQ HUBSN INC</td><td>30</td><td>XO</td><td>03/24/25</td><td>HUBQ0000210</td><td>XOSCHCAN801STR</td><td>CA</td><td>02/27/25</td><td></td><td></td><td></td><td></td><td>3802</td><td>H898; BLUE WATER BRIDGE</td><td>SAME</td><td>87-338228200</td><td></td><td>Ult.: MI | City                 StateOH Zip</td><td>CATENSYS US INC | 901 WILSHIRE DR SUITE 560 | City TROY           StateMI Zip48084</td><td>19,690</td><td>68.20</td><td>5,414.76</td><td>0.00</td><td>68.20</td><td>5,482.96</td><td>C. Torres as ATTY in FACT 3/24/2025</td><td>DACHSER USA | 2000 ARTHUR AVE UNIT B | ELK GROVE VILLAGE, IL 60007 | PHONE:1-847-806-8800</td><td>Q31652156/31600159640</td></tr></tbody></table></div>
+  </section>
+
+  <section>
+    <h2>Datenbank-Tabelle: entry_lines <span class="badge">3 Datensatz/Datensätze</span></h2>
+    <p>Vollständige Warenpositionen (Felder 27–34), verknüpft über <code>entry_id</code> mit <code>entries</code>.</p>
+    <div class='table-wrap'><table class='data-table'><thead><tr><th>id</th><th>entry_id</th><th>source_block</th><th>line_no</th><th>country_of_origin_line</th><th>program_code</th><th>description</th><th>htsus_no</th><th>gross_weight</th><th>net_quantity</th><th>htsus_rate</th><th>duty_amount</th><th>entered_value</th><th>manifest_qty</th><th>relationship</th><th>visa_no</th><th>mpf_rate</th><th>mpf_amount</th><th>invoice_no</th><th>invoice_reference</th><th>invoice_qty</th><th>invoice_value_qty</th><th>invoice_value_amount</th><th>invoice_value_rate</th><th>invoice_value_currency</th></tr></thead><tbody><tr><td>1</td><td>1</td><td>main</td><td>001</td><td>CA</td><td>EO 25% DUTY</td><td>OTH PRTS,ACCES,MOTOR VEHICLES</td><td>8708.99.8180</td><td>416</td><td>10050</td><td>2.5%</td><td>251.25</td><td></td><td>3960</td><td>NO</td><td>C517</td><td></td><td></td><td>001</td><td>182189070</td><td>1</td><td></td><td></td><td></td><td></td></tr><tr><td>2</td><td>1</td><td>continuation_1</td><td>002</td><td>CA</td><td>EO 25% DUTY</td><td>OTH PRTS,ACCES,MOTOR VEHICLES</td><td>8708.99.8180</td><td>335</td><td>6407</td><td>2.5%</td><td>160.18</td><td></td><td>6600</td><td>NO</td><td>C513</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr><tr><td>3</td><td>1</td><td>continuation_1</td><td>003</td><td>CA</td><td>EO 25% DUTY</td><td>OTH PRTS,ACCES,MOTOR VEHICLES</td><td>8708.99.8180</td><td>59</td><td>3233</td><td>2.5%</td><td>80.83</td><td></td><td>600</td><td>NO</td><td>C259</td><td></td><td></td><td>003</td><td>182189071</td><td>1</td><td></td><td></td><td></td><td></td></tr></tbody></table></div>
+  </section>
+
+</main>
+<footer>Dieser Report ist ein Schnappschuss des aktuellen Datenbankinhalts (cbp7501_meine.db).
+Bei neuen Importen bitte den Report neu erstellen lassen.</footer>
+<script>
+(function () {
+  var dropZone = document.getElementById('dropZone');
+  var input = document.getElementById('pdfInput');
+  var listEl = document.getElementById('fileList');
+
+  function humanSize(n) {
+    if (n === undefined || n === null) return '';
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return (i === 0 ? n.toFixed(0) : n.toFixed(1)) + ' ' + units[i];
+  }
+
+  function fmtDate(ts) {
+    if (!ts) return '';
+    var d = new Date(ts);
+    function p(x) { return String(x).padStart(2, '0'); }
+    return p(d.getDate()) + '.' + p(d.getMonth() + 1) + '.' + d.getFullYear() +
+           '  ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds());
+  }
+
+  function renderFiles(files) {
+    if (!files || !files.length) { listEl.innerHTML = ''; return; }
+    var rows = '';
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      var ok = /\.pdf$/i.test(f.name);
+      rows += '<tr><td>' + f.name + '</td>' +
+              '<td>' + humanSize(f.size) + '</td>' +
+              '<td>' + fmtDate(f.lastModified) + '</td>' +
+              '<td>' + (ok ? 'Ausgewählt (Vorschau) – Import über Desktop-App erforderlich'
+                           : 'Keine PDF-Datei') + '</td></tr>';
+    }
+    listEl.innerHTML =
+      '<table><thead><tr><th>Datei-Name</th><th>Größe</th><th>Geändert am</th><th>Status</th></tr></thead>' +
+      '<tbody>' + rows + '</tbody></table>';
+  }
+
+  input.addEventListener('change', function () { renderFiles(input.files); });
+
+  ['dragenter', 'dragover'].forEach(function (evt) {
+    dropZone.addEventListener(evt, function (e) {
+      e.preventDefault(); e.stopPropagation();
+      dropZone.classList.add('dragover');
+    });
+  });
+  ['dragleave', 'drop'].forEach(function (evt) {
+    dropZone.addEventListener(evt, function (e) {
+      e.preventDefault(); e.stopPropagation();
+      dropZone.classList.remove('dragover');
+    });
+  });
+  dropZone.addEventListener('drop', function (e) {
+    var files = e.dataTransfer && e.dataTransfer.files;
+    if (files && files.length) { renderFiles(files); }
+  });
+})();
+</script>
+</body>
+</html>
