@@ -1,4 +1,11 @@
 @echo off
-REM Verknuepfung: startet die CBP 7501 Import-App (Drag & Drop -> Datenbank)
+REM Startet die CBP 7501 Import-App
 cd /d "%~dp0"
-start "" python cbp7501_app.py
+python cbp7501_app.py 2>>startup_error.log
+if %ERRORLEVEL% NEQ 0 (
+    echo.
+    echo === FEHLER beim Starten (siehe startup_error.log) ===
+    type startup_error.log
+    echo.
+    pause
+)

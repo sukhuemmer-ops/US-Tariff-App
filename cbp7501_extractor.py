@@ -140,34 +140,108 @@ except ImportError:
 _OCR_AVAILABLE = _TESS_OK and (_PDF2IMG_OK or _FITZ_OK)
 
 
-def _ocr_page(pdf_path, page_index, dpi=200):
+def _preprocess_ocr_image(img):
+    """Verbessert Bildqualität vor OCR: Graustufen, Kontrast, Schärfe.
+    Rückgabe: (original_img, preprocessed_img) – beide werden probiert."""
+    try:
+        from PIL import ImageEnhance as _IE, ImageFilter as _IF, ImageOps as _IO
+        # Graustufen
+        gray = img.convert("L")
+        # Kontrast erhöhen
+        gray = _IE.Contrast(gray).enhance(2.0)
+        # Schärfe erhöhen
+        gray = _IE.Sharpness(gray).enhance(2.0)
+        # Leichter Unschärfe-Erweiterungsfilter (Noise reduction)
+        gray = gray.filter(_IF.MedianFilter(size=3))
+        return gray
+    except Exception:
+        return img
+
+
+def _ocr_page(pdf_path, page_index, dpi=300):
     """Extrahiert Text einer Bildseite via Tesseract OCR.
-    Bevorzugt PyMuPDF/fitz (kein Poppler noetig), Fallback auf pdf2image+Poppler."""
+    Bevorzugt PyMuPDF/fitz (kein Poppler noetig), Fallback auf pdf2image+Poppler.
+
+    Versucht mehrere Strategien bei schlechter Bildqualität:
+    - Erst 300 DPI + Bildvorverarbeitung + PSM 6
+    - Dann PSM 3 (automatisch)
+    - Dann PSM 12 (sparse text) bei sehr wenig Text
+    - Dann 400 DPI als letzter Versuch
+    """
     if not _TESS_OK or not (_FITZ_OK or _PDF2IMG_OK):
         return ""
-    try:
-        img = None
+
+    def _render_page(render_dpi):
+        """Rendert eine PDF-Seite als PIL-Image."""
         if _FITZ_OK:
             doc = _fitz.open(pdf_path)
             page = doc[page_index]
-            mat = _fitz.Matrix(dpi / 72, dpi / 72)
+            mat = _fitz.Matrix(render_dpi / 72, render_dpi / 72)
             pix = page.get_pixmap(matrix=mat)
             import io
             from PIL import Image as _PILImage
             img = _PILImage.open(io.BytesIO(pix.tobytes("png")))
             doc.close()
+            return img
         elif _PDF2IMG_OK:
-            kw = {"first_page": page_index + 1, "last_page": page_index + 1, "dpi": dpi}
+            kw = {"first_page": page_index + 1, "last_page": page_index + 1,
+                  "dpi": render_dpi}
             if _POPPLER_PATH:
                 kw["poppler_path"] = _POPPLER_PATH
             imgs = _pdf2img(pdf_path, **kw)
-            if not imgs:
-                return ""
-            img = imgs[0]
+            return imgs[0] if imgs else None
+        return None
+
+    def _run_ocr(img, config):
+        """Führt Tesseract aus und normiert das Ergebnis."""
+        raw = _tesseract.image_to_string(img, lang="eng", config=config)
+        raw = re.sub(r"(\d),(\d{2})(?!\d)", r"\1.\2", raw)
+        return raw
+
+    try:
+        img = _render_page(dpi)
         if img is None:
             return ""
-        return _tesseract.image_to_string(img, lang="eng")
-    except Exception as _e:
+
+        # Stufe 1: Vorverarbeitetes Bild + PSM 6
+        img_pre = _preprocess_ocr_image(img)
+        raw = _run_ocr(img_pre, "--psm 6")
+        if len(raw.strip()) >= 80:
+            return raw
+
+        # Stufe 2: PSM 3 (auto-detect layout)
+        raw3 = _run_ocr(img_pre, "--psm 3")
+        if len(raw3.strip()) > len(raw.strip()):
+            raw = raw3
+        if len(raw.strip()) >= 80:
+            return raw
+
+        # Stufe 3: Originalbild (ohne Preprocessing) + PSM 3
+        raw_orig = _run_ocr(img, "--psm 3")
+        if len(raw_orig.strip()) > len(raw.strip()):
+            raw = raw_orig
+        if len(raw.strip()) >= 80:
+            return raw
+
+        # Stufe 4: PSM 12 (sparse text, gut bei Form-Seiten mit wenig Fließtext)
+        raw12 = _run_ocr(img_pre, "--psm 12")
+        if len(raw12.strip()) > len(raw.strip()):
+            raw = raw12
+        if len(raw.strip()) >= 30:
+            return raw
+
+        # Stufe 5: Höhere Auflösung (400 DPI) als letzter Versuch
+        img_hq = _render_page(400)
+        if img_hq:
+            img_hq_pre = _preprocess_ocr_image(img_hq)
+            raw_hq = _run_ocr(img_hq_pre, "--psm 6")
+            if not raw_hq.strip():
+                raw_hq = _run_ocr(img_hq_pre, "--psm 3")
+            if len(raw_hq.strip()) > len(raw.strip()):
+                raw = raw_hq
+
+        return raw
+    except Exception:
         return ""
 
 
@@ -182,7 +256,63 @@ def _norm(s):
     return re.sub(r"\s+", "", s or "").upper()
 
 
-def find_cbp_pages(pdf, verbose=False, pdf_path=None):
+def _is_meaningful_text(text, min_chars=50):
+    """Prüft ob pdfplumber tatsächlich sinnvollen Text extrahiert hat.
+    Bilder-PDFs liefern manchmal leere Strings, manchmal Metadaten-Fragmente
+    (z.B. 'Form1' oder 'Background') die kein echtes Dokument beschreiben.
+    Wir fordern mindestens min_chars Zeichen mit Buchstaben/Ziffern."""
+    stripped = re.sub(r'\s+', '', text or '')
+    return len(stripped) >= min_chars
+
+
+def _cbp_fuzzy_match(norm_text):
+    """Prüft ob der OCR-Text wahrscheinlich eine CBP-Seite beschreibt,
+    auch wenn Tesseract einzelne Zeichen falsch erkannt hat.
+
+    Strategie:
+    1. Exakter Match (wie bisher)
+    2. Partial Match: Teile der Schlüsselphrase erkannt
+    3. Fuzzy: Typische CBP-Schlüsselwörter die immer erscheinen
+    """
+    # Exakter Match
+    if (("DEPARTMENTOFHOMELANDSECURITY" in norm_text and "ENTRYSUMMARY" in norm_text)
+            or "CBPFORM7501" in norm_text):
+        return True, "exact"
+
+    # Partial Match: OCR verwechselt häufig O/0, I/1, S/5, B/8 etc.
+    # "DEPARTMENTOFHOMELAND" ohne "SECURITY", kombiniert mit anderen Kennzeichen
+    cbp_keywords = [
+        "DEPARTMENTOFHOMELAND",   # oft reicht das
+        "ENTRYSUMMARY",
+        "FORM7501",
+        "CBPFORM",
+        "U.S.CUSTOMSANDBORDER",
+        "USCUSTOMSANDBORDER",
+        "BORDERPROTECTION",
+        "ENTRY SUMMARY",         # mit Leerzeichen (aus raw text)
+    ]
+    norm_raw = norm_text  # normiert (keine Leerzeichen)
+
+    # Mindestens 2 der CBP-Keywords → wahrscheinlich CBP-Seite
+    hits = sum(1 for kw in cbp_keywords if re.sub(r'\s+', '', kw) in norm_raw)
+    if hits >= 2:
+        return True, f"fuzzy({hits} keywords)"
+
+    # Typische Formularfelder die immer auf CBP 7501 erscheinen
+    field_keywords = [
+        "FILINGCODE", "FILERCODE", "ENTRYTYPE", "FILERCODEENTRYNO",
+        "SURETY", "BONDTYPE", "PORTCODE", "IMPORTINGCARRIER",
+        "MODEOFTRANSPORT", "COUNTRYOFORIGIN", "HTSNUMBER",
+        "DUTIESANDTAXES", "ENTEREDVALUE", "MERCHANDISEPROCESSING",
+    ]
+    field_hits = sum(1 for kw in field_keywords if kw in norm_raw)
+    if field_hits >= 3:
+        return True, f"fields({field_hits} field keywords)"
+
+    return False, ""
+
+
+def find_cbp_pages(pdf, verbose=False, pdf_path=None, force_ocr_all=False):
     """Liefert eine Liste von Dicts {index, layout_text, plain_text, is_continuation}
     fuer alle Seiten, die zum CBP Form 7501 gehoeren.
 
@@ -190,43 +320,101 @@ def find_cbp_pages(pdf, verbose=False, pdf_path=None):
     plain_text (natuerlicher Lesefluss) fuer Summen-/Deklarationsblock und
     Warenpositionen, da dort die Spaltenausrichtung stark variiert.
 
-    Beide Extraktionsmodi werden fuer die Erkennung geprueft: bei manchen Seiten
-    liefert layout=True keinen oder unvollstaendigen Text (z.B. bei bestimmten
-    Continuation Sheets), waehrend plain_text die Inhalte korrekt enthaelt.
-    Zusaetzlich gilt eine Seite auch dann als CBP-Seite, wenn sie
-    "CBP FORM 7501" im Text enthaelt (Fallback fuer verkuerzte Kopfzeilen)."""
+    Parameter:
+        force_ocr_all: True = OCR auf JEDER Seite erzwingen (Fallback bei
+                       image-only PDFs wo pdfplumber Bild-Metadaten als
+                       'Text' zurückgibt und OCR daher nicht ausgelöst wird).
+    """
     pages = []
+    # OCR-Steuerung: Wann wird OCR ausgelöst?
+    #   Normalfall (force_ocr_all=False):
+    #     (a) pdfplumber findet keinen bedeutungsvollen Text (< 50 Zeichen), UND
+    #     (b) OCR wurde noch nicht verwendet ODER letzte Seite war CBP
+    #   Fallback (force_ocr_all=True):
+    #     Jede Seite wird per OCR geprüft, unabhängig vom pdfplumber-Ergebnis.
+    #     Wird aktiviert wenn erster Durchlauf 0 CBP-Seiten fand.
+    _cbp_ever_found = False
+    _last_page_was_cbp = False
+
     for i, page in enumerate(pdf.pages):
-        layout_text = page.extract_text(layout=True) or ""
         plain_text = page.extract_text() or ""
 
-        # OCR-Fallback: wenn Seite kein Text hat (Bild-PDF), Tesseract verwenden
-        if not plain_text.strip() and pdf_path and _OCR_AVAILABLE:
-            ocr_text = _ocr_page(pdf_path, i)
-            if ocr_text.strip():
-                layout_text = ocr_text
-                plain_text = ocr_text
-                if verbose:
-                    print(f"  [Seite {i+1:>3}] OCR angewendet ({len(ocr_text)} Zeichen)")
+        # Entscheide ob OCR nötig/sinnvoll ist
+        _text_ok = _is_meaningful_text(plain_text)  # pdfplumber hat echten Text
 
-        norm_l = _norm(layout_text)
+        if pdf_path and _OCR_AVAILABLE:
+            if force_ocr_all:
+                # Immer OCR – auch wenn pdfplumber etwas liefert (könnten
+                # Metadaten/Formularrahmen sein, kein echter Seitentext)
+                ocr_text = _ocr_page(pdf_path, i)
+                if ocr_text.strip():
+                    # Nimm das längere Ergebnis: pdfplumber ODER OCR
+                    if len(ocr_text.strip()) > len(plain_text.strip()):
+                        plain_text = ocr_text
+                        if verbose:
+                            print(f"  [Seite {i+1:>3}] [force-OCR] "
+                                  f"OCR ersetzt pdfplumber ({len(ocr_text)} Zeichen)")
+                    elif not _text_ok:
+                        plain_text = ocr_text
+                        if verbose:
+                            print(f"  [Seite {i+1:>3}] [force-OCR] "
+                                  f"OCR ergänzt ({len(ocr_text)} Zeichen)")
+            elif not _text_ok:
+                # Standard: OCR nur wenn pdfplumber nichts Sinnvolles liefert
+                _should_ocr = (not _cbp_ever_found) or _last_page_was_cbp
+                if _should_ocr:
+                    ocr_text = _ocr_page(pdf_path, i)
+                    if ocr_text.strip():
+                        plain_text = ocr_text
+                        if verbose:
+                            print(f"  [Seite {i+1:>3}] OCR angewendet "
+                                  f"({len(ocr_text)} Zeichen)")
+                elif verbose:
+                    print(f"  [Seite {i+1:>3}] OCR übersprungen "
+                          f"(CBP bereits gefunden, Seite nicht direkt nach CBP-Block)")
+
         norm_p = _norm(plain_text)
 
-        # Seite gilt als CBP-Seite, wenn in layout- ODER plain-Extraktion
-        # die Kennzeichnungen gefunden werden.
-        is_cbp = (
-            ("DEPARTMENTOFHOMELANDSECURITY" in norm_l and "ENTRYSUMMARY" in norm_l)
-            or ("DEPARTMENTOFHOMELANDSECURITY" in norm_p and "ENTRYSUMMARY" in norm_p)
-            or "CBPFORM7501" in norm_l
+        # CBP-Erkennung: erst exakt, dann fuzzy (für rauschartige OCR-Ausgabe)
+        _cbp_exact = (
+            ("DEPARTMENTOFHOMELANDSECURITY" in norm_p and "ENTRYSUMMARY" in norm_p)
             or "CBPFORM7501" in norm_p
         )
+        _cbp_candidate = _cbp_exact
+        _match_method = "exact" if _cbp_exact else ""
+
+        if not _cbp_candidate:
+            _fuzzy_match, _match_method = _cbp_fuzzy_match(norm_p)
+            _cbp_candidate = _fuzzy_match
+
+        # Layout-Extraktion nur für CBP-Kandidaten (teuer, Stufe 2)
+        if _cbp_candidate:
+            layout_text = page.extract_text(layout=True) or ""
+            # Bei OCR-Text ist layout_text = plain_text (kein Layout-Modus möglich)
+            if not _is_meaningful_text(layout_text):
+                layout_text = plain_text
+        else:
+            layout_text = plain_text
+
+        norm_l = _norm(layout_text)
+
+        # Finale CBP-Prüfung: layout_text ODER plain_text
+        is_cbp_l, mm_l = _cbp_fuzzy_match(norm_l)
+        is_cbp_p, mm_p = _cbp_fuzzy_match(norm_p)
+        is_cbp = is_cbp_l or is_cbp_p
+        match_info = mm_l or mm_p or _match_method
+
         if not is_cbp:
+            _last_page_was_cbp = False
             if verbose:
                 preview = (plain_text[:120] or layout_text[:120]).replace("\n", " / ")
                 print(f"  [Seite {i+1:>3}] UEBERSPRUNGEN (kein CBP-Kennzeichen). "
                       f"Textanfang: {preview!r}")
             continue
 
+        # CBP-Seite gefunden → Flags setzen
+        _cbp_ever_found = True
+        _last_page_was_cbp = True
         is_cont = "CONTINUATIONSHEET" in norm_l or "CONTINUATIONSHEET" in norm_p
         pages.append({
             "index": i,
@@ -236,7 +424,7 @@ def find_cbp_pages(pdf, verbose=False, pdf_path=None):
         })
         if verbose:
             marker = "Continuation Sheet" if is_cont else "Entry Summary (Hauptseite)"
-            print(f"  [Seite {i+1:>3}] CBP-Seite erkannt: {marker}")
+            print(f"  [Seite {i+1:>3}] CBP-Seite erkannt: {marker} [{match_info}]")
             preview = plain_text[:200].replace("\n", " / ")
             print(f"           Textanfang: {preview!r}")
     return pages
@@ -312,8 +500,30 @@ HEADER_FIELDS = {
 # (CBP Form 7501 hat ein festes Layout - Werte werden über erwartete Muster
 # erkannt statt über Spaltenposition, da Wert- und Label-Spalten in der
 # Textextraktion nicht exakt deckungsgleich sind).
+def _normalize_entry_no(s):
+    """Normalisiert OCR-Artefakte in Entry-No-Strings – ADDITIV:
+    Jede neue OCR-Variante wird als zusätzlicher Fall ergänzt.
+      'U52-1651945~9'   →  'U52-1651945-9'   (Tilde statt Bindestrich)
+      'U52_1651945-9'   →  'U52-1651945-9'   (Unterstrich statt Bindestrich)
+      'U52 1651945-9'   →  'U52-1651945-9'   (Leerzeichen statt Bindestrich,
+                                               nur innerhalb von Entry-No-Gruppen)
+    """
+    if not s:
+        return s
+    # Tilde, Gedankenstrich (–/—), Mittelpunkt (·) → Bindestrich
+    s = re.sub(r'[~–—\xb7]', '-', s)
+    # Unterstrich als Trennzeichen → Bindestrich (OCR verwechselt _ mit -)
+    s = re.sub(r'_', '-', s)
+    # Leerzeichen zwischen Buchstaben/Ziffern-Gruppe und Ziffern-Gruppe → Bindestrich
+    # "U52 1651945-9" → "U52-1651945-9"  (nur wenn Gesamt-Format erhalten bleibt)
+    s = re.sub(r'([A-Z0-9]{3})\s+(\d)', r'\1-\2', s)
+    return s
+
+
 ROW_1_7 = re.compile(
-    r"^\s*(?P<filer_code_entry_no>[A-Z0-9]{3}-\d{4,8}-\d)\s+"
+    # Erlaubt Tilde und Unterstrich statt Bindestrich (OCR-Verwechslungen)
+    # "U52-1651945~9" / "U52_1651945-9" werden akzeptiert und danach normalisiert
+    r"^\s*(?P<filer_code_entry_no>[A-Z0-9]{3}[-~_]\d{4,8}[-~_]\d)\s+"
     r"(?P<entry_type>\d{2})\s+"
     r"(?:\S+\s+)??(?P<summary_date>\d{2}/\d{2}/\d{2})\s+"
     r"(?P<surety_no>\S+)\s+(?P<bond_type>\S+)\s+(?P<port_code>\S+)\s+"
@@ -351,6 +561,10 @@ def parse_header(main_layout_text, main_plain_text):
                 m = ROW_1_7.match(vline)
                 if m:
                     data.update({k: v for k, v in m.groupdict().items() if v})
+                    # OCR-Tilde o.ä. im Entry-No normalisieren
+                    if data.get("filer_code_entry_no"):
+                        data["filer_code_entry_no"] = _normalize_entry_no(
+                            data["filer_code_entry_no"])
                     break
 
         if "8.IMPORTINGCARRIER" in nline and "9.MODEOFTRANSPORT" in nline:
@@ -405,13 +619,14 @@ def parse_header(main_layout_text, main_plain_text):
     # --- Fallback: suche Entry No. direkt im Text (OCR liefert ggf. kein ROW_1_7-Match) ---
     if "filer_code_entry_no" not in data:
         _all_text = (main_layout_text or "") + "\n" + (main_plain_text or "")
-        # Variante 1: mit Bindestrichen, z.B. "U52-1651637-2"
-        _m = re.search(r"(?<![\w])([A-Z0-9]{3}-\d{4,8}-\d)(?![\w-])", _all_text)
+        # Variante 1: Bindestrich oder Tilde als Trennzeichen (OCR-Verwechslung)
+        # z.B. "U52-1651637-2" oder "U52-1651945~9"
+        _m = re.search(r"(?<![\w])([A-Z0-9]{3}[-~_]\d{4,8}[-~_]\d)(?![\w])", _all_text)
         if _m:
-            data["filer_code_entry_no"] = _m.group(1)
+            data["filer_code_entry_no"] = _normalize_entry_no(_m.group(1))
         else:
             # Variante 2: ohne Bindestriche (OCR), z.B. "U5216516372" (Letter + 10 Ziffern)
-            _m = re.search(r"(?<!\d)([A-Z]\d{10})(?!\d)", _all_text)
+            _m = re.search(r"(?<![A-Z0-9])([A-Z]\d{10})(?!\d)", _all_text)
             if _m:
                 _r = _m.group(1)
                 data["filer_code_entry_no"] = f"{_r[0:3]}-{_r[3:10]}-{_r[10]}"
@@ -532,7 +747,7 @@ LINE_START_RE = re.compile(
     r"(?P<country_of_origin_line>[A-Z]{2})\s+(?P<program_code>.+?)"   # Format A
     r"|"
     r"(?P<alt_first_text>[A-Z].+?)"                                    # Format B
-    r")\s*$",
+    r")[\s:]*$",   # [\s:]* statt \s*: OCR hängt " :" an Zeilenende an
     re.M,
 )
 
@@ -541,7 +756,7 @@ INVOICE_RE = re.compile(
     r"(?:\s*[-|)]+\s*|\s+)"               # Trennzeichen: " - " | " -| " | " ") | " "
     r"(?P<inv_ref>\d{6,12})"              # Rechnungsreferenz (6-12 Ziffern)
     r"(?:\s+\S+)?"                        # optionale Zwischenfelder (OCR-Artefakte)
-    r"\s+(?:[QqGg](?:TY|ty|ry)|TY|ty)[:.]?\s*"  # "QTY:" / "TY:" / "Qty:" / "Qry:"
+    r"\s+(?:[QqGgfF](?:TY|ty|ry)|TY|ty)[:.]?\s*"  # "QTY:" / "TY:" / "Qty:" / "Qry:" / "fry:" (OCR-Fehler Q→f)
     r"(?P<inv_qty>\S+)"                   # Menge
 )
 
@@ -555,40 +770,114 @@ HTSUS_RE = re.compile(
     # Extra-Zahlenfelder ueberspringen, aber NICHT Anfang einer Rate "2.5%" oder "FREE"
     r"(?:\s+(?![\d.]+%|FREE)[\d,]+)*"
     r"(?:\s+(?P<rate>(?:[\d.,]+%|FREE)))?"   # Rate optional: OCR kann Rate auf naechste Zeile setzen
-    r"(?:\s+(?P<duty_amount>[\d,]+\.\d{2}))?",  # Betrag fehlt bei FREE
+    r"(?:\s+(?P<duty_amount>[\d,]+[.,]\d{2}))?",  # Betrag fehlt bei FREE; OCR: Komma als Dezimaltrenner
     re.M,
 )
 
 # Standalone-Rate-Zeile: OCR trennt manchmal "2.5%  14.00" auf eigene Zeile
 # (wenn HTSUS-Zeile zu lang ist). Wird der letzten _hts_row ohne Rate zugeordnet.
 RATE_LINE_RE = re.compile(
-    r"^\s*(?P<rate_s>[\d.,]+%|FREE)(?:\s+(?P<duty_s>[\d,]+\.\d{2}))?\s*$"
+    # [\s|:.]*$ statt \s*$: OCR hängt Spaltenrahmen-Zeichen " |", " :", " ." an
+    r"^\s*(?P<rate_s>[\d.,]+%|FREE)(?:\s+(?P<duty_s>[\d,]+[.,]\d{2}))?[\s|:.]*$"
 )
 
 # Zusaetzliche Zoll-/Tarif-Unterzeile derselben Position - Format
-# "<HTSUS-/Programmcode> <Zollsatz> [<Betrag>]" OHNE Gewicht/Menge, z.B.
-# "9903.01.10   25%   2,512.50" oder "9903.01.14   FREE".
-# Betrag ist optional (fehlt bei 0%-/FREE-Positionen wie USCMA-Ausnahmen).
+# "<HTSUS-/Programmcode> [<Entered-Value>] <Zollsatz> [<Betrag>]"
+# Beispiele:
+#   "9903.01.10   25%   2,512.50"         (kein Entered Value)
+#   "9903.81.90   1   25%   7,174.25"     (Entered Value "1" bei Section-232)
+#   "9903.01.14   FREE"                   (kein Betrag bei 0%-/FREE-Positionen)
+# Betrag ist optional (fehlt bei FREE-Positionen wie USMCA-Ausnahmen).
 EXTRA_TARIFF_RE = re.compile(
     # Optionales "(O)XX "-Präfix (Origin-Kennzeichen) wie in HTSUS_RE
-    r"^\s*(?:\(O\)[A-Z]{2}\s+)?(?P<htsus2>\d{4}[.,]\d{2}[.,]\d{2,4})\s+(?P<rate2>(?:[\d.]+%|FREE))"
-    r"(?:\s+(?P<amount2>[\d,]+\.\d{2}))?\s*$",
+    r"^\s*(?:\(O\)[A-Z]{2}\s+)?(?P<htsus2>\d{4}[.,]\d{2}[.,]\d{2,4})\s+"
+    # Optionale Zwischen-Spalten: Entered Value (z.B. "1" bei Section-232-Zeilen)
+    r"(?:(?P<entered2>[\d,]+)\s+)?"
+    r"(?P<rate2>(?:[\d.,]+%|FREE))"
+    r"(?:\s+(?P<amount2>[\d,]+[.,]\d{2}))?[\s|:.]*$",  # [\s|:.]*: trailing Spaltenrahmen-Zeichen
     re.M,
 )
 
 # HTSUS-Code ohne Rate/Betrag (Kennzeichnungszeile, z.B. "9903.01.26" allein):
 # Wird als Unterzeile mit leerem Zollsatz/Betrag erfasst.
 HTSUS_LABEL_RE = re.compile(
-    r"^\s*(?P<htsus_label>\d{4}[.,]\d{2}[.,]\d{2,4})\s*$",
+    r"^\s*(?P<htsus_label>\d{4}[.,]\d{2}[.,]\d{2,4})[\s|:.]*$",
     re.M,
 )
-# Merchandise Processing Fee: Leerzeichen zwischen den Wörtern werden
-# zugelassen, da pdfplumber bei manchen PDFs "Merchandise Processing Fee"
-# (mit Leerzeichen) statt "MerchandiseProcessingFee" (kompakt) ausgibt.
-MPF_RE = re.compile(r"Merchandise\s*Processing\s*Fee\s*([\d.,]+%)\s*([\d,]+\.\d{2})?")
-HMF_RE = re.compile(r"Harbor\s*Maintenance\s*Fee\s*([\d.,]+%)\s*([\d,]+\.\d{2})?")
+# Merchandise / Harbor Maintenance Fee:
+# - \s* erlaubt Leerzeichen zwischen Wörtern (pdfplumber-Variante)
+# - [Mm]? / [Hh]? fängt OCR-Ausfall des ersten Buchstabens ab:
+#   "lerchandise Processing Fee" (M→l oder fehlt) bzw. "arbor Maintenance Fee"
+# - [\d.,]+%? macht % optional: OCR liest "0.3464%" manchmal als "0.34648"
+#   (% → 8) oder "0.34648" (% fehlt ganz); _norm_rate korrigiert danach.
+MPF_RE = re.compile(r"[Mm]?erchandise\s*Processing\s*Fee\s*([\d.,]+%?)\s*([\d,]+[.,]\d{2})?")
+HMF_RE = re.compile(r"[Hh]?arbor\s*Maintenance\s*Fee\s*([\d.,]+%?)\s*([\d,]+[.,]\d{2})?")
 INVOICE_VALUE_RE = re.compile(r"INVOICEVALUE:\s*([\d,]+)\s*=\s*([\d,]+)\s*@\s*([\d.]+)\s*([A-Z]{3})")
 AD_CVD_RE = re.compile(r"^\s*(\d+)\s+(NO|YES)\s+([A-Za-z0-9]+)\s*$", re.M | re.I)
+
+
+def _norm_amount(s):
+    """Normalisiert OCR-Betragsstrings – entfernt Tausender-Trennzeichen,
+    wandelt Dezimalkomma in Punkt um.
+
+    Beispiele:
+      '251,25'    -> '251.25'   (europäisches Dezimalkomma)
+      '2,058.03'  -> '2058.03'  (US-Tausender-Komma + Punkt-Dezimale)
+      '26,011.74' -> '26011.74'
+      '1,234'     -> '1234'     (kein Dezimalanteil)
+      '0.50'      -> '0.50'     (unveränderter Punkt-Dezimalwert)
+      None        -> None
+    """
+    if not s:
+        return s
+    import re as _re
+    # Fall 1a: Europäisches Dezimalkomma OHNE Tausenderpunkt: "251,25" → "251.25"
+    # Erkennung: endet auf Komma + genau 2 Ziffern, kein Punkt vorhanden
+    if _re.match(r'^\d[\d.,]*,\d{2}$', s) and '.' not in s:
+        idx = s.rfind(',')
+        return s[:idx].replace('.', '').replace(',', '') + '.' + s[idx+1:]
+    # Fall 1b: Europäisches Format MIT Tausenderpunkt: "1.234,56" / "26.011,74"
+    # Erkennung: Gruppen à 3 Ziffern getrennt durch Punkte, Komma als Dezimaltrenner
+    if _re.match(r'^\d{1,3}(\.\d{3})+,\d{2}$', s):
+        return s.replace('.', '').replace(',', '.')
+    # Fall 2: US-Format mit Tausender-Komma und Punkt-Dezimale: "2,058.03"
+    if _re.match(r'^\d[\d,]*\.\d+$', s):
+        return s.replace(',', '')
+    # Fall 3: Nur Tausender-Komma, kein Dezimalanteil: "1,234"
+    if _re.match(r'^\d[\d,]+$', s) and ',' in s:
+        return s.replace(',', '')
+    return s
+
+
+def _norm_rate(s):
+    """Normalisiert OCR-Artefakte in Zollsatz-Strings – ADDITIV.
+
+    Beispiele:
+      '0,.3464%'  → '0.3464%'   (OCR-Komma vor Dezimalstelle)
+      '0.34648'   → '0.34648%'  (% fehlt / als Ziffer gelesen → % ergänzen)
+      '2,5%'      → '2.5%'      (Komma als Dezimaltrenner)
+      '25'        → '25%'       (% komplett vergessen)
+      None        → None
+    """
+    if not s:
+        return s
+    # OCR-Komma direkt vor Punkt entfernen: "0,.3464" → "0.3464"
+    # WICHTIG: Nur vor Punkt, NICHT vor Ziffer – sonst wird "0,3464%" zu "03464%"
+    # Das Dezimalkomma ("0,3464" → "0.3464") behandelt der Replace-Block unten.
+    s = re.sub(r',(?=\.)', '', s)
+    # Komma als Dezimaltrenner → Punkt: "2,5" → "2.5"
+    if ',' in s:
+        s = s.replace(',', '.')
+    # % fehlt am Ende → ergänzen (Kontext ist immer Zollsatz/Fee)
+    if not s.endswith('%'):
+        s = s + '%'
+    return s
+
+
+# Standalone-Betrag auf eigener Zeile (OCR trennt Betrag von Rate ab):
+# Beispiel: HTSUS_RE erfasst "2.5%" aber nicht "76.08" (auf nächster Zeile).
+# [\s:]* am Ende: OCR hängt oft " :" an Zeilenenden an (Spaltenrahmen).
+AMOUNT_ONLY_RE = re.compile(r"^\s*(?P<amt>[\d,]+[.,]\d{2})[\s|:.]*$")
 
 
 def _new_item(source_block, carry_invoice=None):
@@ -738,6 +1027,31 @@ def parse_line_items(text, source_block="main"):
     started = (source_block != "main")
     for raw in lines:
         line = raw.rstrip()
+        # ── OCR-Normalisierung: Zeile vor Regex-Matching bereinigen ──────────
+        # Alle Korrekturen sind ADDITIV (neue Fälle hinzufügen, nichts entfernen).
+        #
+        # Muster 1: "8708 .99,8180" oder "8708 ,99,8180" → "8708.99.8180"
+        #   (Leerzeichen vor Gruppe 2; Punkt ODER Komma als erstes Trennzeichen)
+        line = re.sub(r'(\d{4})\s+[,.](\d{2})[.,]\.?(\d{4})', r'\1.\2.\3', line)
+        # Muster 2: "8708.99 8180" → "8708.99.8180"
+        #   (fehlendes Trennzeichen vor letzter 4-Ziffern-Gruppe)
+        line = re.sub(r'(\d{4}[.,]\d{2})\s+(\d{4})(?=\s|$)', r'\1.\2', line)
+        # Muster 3: "18708.99.8180" → "8708.99.8180"
+        #   (führende "1" = OCR-Artefakt aus Spaltenrahmen "|" → "1")
+        line = re.sub(r'(?<!\d)1(\d{4}[.,]\d{2}[.,]\d{2,4})(?=\s|$)', r'\1', line)
+        # Muster 4: "160.18-" → "160.18"  (CBP-Korrektur-Minus nach Betrag)
+        line = re.sub(r'(\d{2})-(?=[\s:]*$|[\s:])', r'\1', line)
+        # Muster 6 (ADDITIV): Führendes "|" nach Zeilennummer entfernen.
+        # OCR liest senkrechten Spaltenrahmen als "|" direkt vor dem Ländercode.
+        # Beispiel: "001 |CA EO 25% DUTY" → "001 CA EO 25% DUTY"
+        line = re.sub(r'^(\s*0\d{2}\s+)\|', r'\1', line)
+        # Muster 5 (ADDITIV): Trailing OCR-Spaltenrahmen-Zeichen entfernen.
+        # CBP-Formulare haben senkrechte Linien die als " |", " :", " ." gelesen werden.
+        # Beispiele: "9903.01.10 25% 5,024.75 |" → "9903.01.10 25% 5,024.75"
+        #            "8708.99.8180 81 4849 2.5% 361.08 ." → "...361.08"
+        # Bereits-tolerante Regex-Enden ([\s|:.]*$) bleiben als zweite Absicherung.
+        line = re.sub(r'(?<=\d)[\s]+[|:.]+\s*$', '', line)
+        # ─────────────────────────────────────────────────────────────────────
         nline = _norm(line)
         if "LINEA.HTSUSNO" in nline or "NO.B.AD/CVDCASENO" in nline:
             started = True
@@ -793,6 +1107,12 @@ def parse_line_items(text, source_block="main"):
             if HMF_RE.search(line) or MPF_RE.search(line):
                 current = _new_item(source_block)
 
+        # Fix Air-PDFs: 9903.xx.xx-Zeile erscheint vor der HTSUS-Hauptzeile
+        # (ohne vorangehende LINE_START / INVOICE_RE → current ist noch None).
+        # Wir starten einen Platzhalter-Item damit die Zeile nicht verloren geht.
+        if current is None and EXTRA_TARIFF_RE.match(line):
+            current = _new_item(source_block)
+
         if current is None:
             continue
 
@@ -809,7 +1129,7 @@ def parse_line_items(text, source_block="main"):
                 "gross_weight": m_hts.group("gross_weight"),
                 "net_quantity": None if _has_origin_pfx else m_hts.group("net_qty"),
                 "htsus_rate": m_hts.group("rate"),
-                "duty_amount": m_hts.group("duty_amount"),
+                "duty_amount": _norm_amount(m_hts.group("duty_amount")),
                 "entered_value": m_hts.group("net_qty") if _has_origin_pfx else None,
             })
             continue
@@ -819,8 +1139,21 @@ def parse_line_items(text, source_block="main"):
         m_rate = RATE_LINE_RE.match(line)
         if m_rate and current["_hts_rows"] and current["_hts_rows"][-1]["htsus_rate"] is None:
             current["_hts_rows"][-1]["htsus_rate"] = m_rate.group("rate_s")
-            current["_hts_rows"][-1]["duty_amount"] = m_rate.group("duty_s")
+            current["_hts_rows"][-1]["duty_amount"] = _norm_amount(m_rate.group("duty_s"))
             continue
+
+        # Standalone-Betrag-Zeile: "76.08 :" auf eigener Zeile wenn Rate schon
+        # erfasst (OCR trennt Rate und Betrag auf separate Zeilen).
+        # Nur anwenden wenn letzte _hts_row Rate hat aber keinen Betrag
+        # und Rate != FREE (FREE-Positionen haben legitimerweise keinen Betrag).
+        m_amt_only = AMOUNT_ONLY_RE.match(line)
+        if m_amt_only and current["_hts_rows"]:
+            _last = current["_hts_rows"][-1]
+            if (_last["duty_amount"] is None
+                    and _last["htsus_rate"] is not None
+                    and _last["htsus_rate"] != "FREE"):
+                _last["duty_amount"] = _norm_amount(m_amt_only.group("amt"))
+                continue
 
         m_extra = EXTRA_TARIFF_RE.match(line)
         if m_extra:
@@ -828,13 +1161,15 @@ def parse_line_items(text, source_block="main"):
             # (z. B. IEEPA-/Section-232-/301-Zusatzzoll mit Code 9903.xx.xx) -
             # wird als eigene Unterzeile mit eigenem HTSUS-Code, Zollsatz und
             # Betrag erfasst, NICHT als "Entered Value" einer anderen Zeile.
+            # entered2 = optionaler Entered-Value vor dem Zollsatz (z.B. "1"
+            # bei Section-232-Zeilen wie "9903.81.90  1  25%  7,174.25").
             current["_hts_rows"].append({
-                "htsus_no": m_extra.group("htsus2").replace(",", "."),
+                "htsus_no":    m_extra.group("htsus2").replace(",", "."),
                 "gross_weight": None,
                 "net_quantity": None,
-                "htsus_rate": m_extra.group("rate2"),
-                "duty_amount": m_extra.group("amount2"),
-                "entered_value": None,
+                "htsus_rate":  m_extra.group("rate2"),
+                "duty_amount": _norm_amount(m_extra.group("amount2")),
+                "entered_value": m_extra.group("entered2"),
             })
             continue
 
@@ -862,16 +1197,18 @@ def parse_line_items(text, source_block="main"):
 
         m_mpf = MPF_RE.search(line)
         if m_mpf:
-            current["mpf_rate"] = m_mpf.group(1)
-            current["mpf_amount"] = m_mpf.group(2)  # kann None sein (OCR-Zeilenumbruch)
+            _mpf_rate = _norm_rate(m_mpf.group(1))   # z.B. "0.34648" → "0.34648%"
+            _mpf_amt  = _norm_amount(m_mpf.group(2))
+            current["mpf_rate"]   = _mpf_rate
+            current["mpf_amount"] = _mpf_amt          # kann None sein (OCR-Zeilenumbruch)
             # MPF auch als eigene Unterzeile in _hts_rows, damit sie als
             # dedizierter Datensatz in entry_lines erscheint (htsus_no="MPF")
             current["_hts_rows"].append({
-                "htsus_no": "MPF",
+                "htsus_no":     "MPF",
                 "gross_weight": None,
                 "net_quantity": None,
-                "htsus_rate": m_mpf.group(1),
-                "duty_amount": m_mpf.group(2),
+                "htsus_rate":   _mpf_rate,
+                "duty_amount":  _mpf_amt,
                 "entered_value": None,
             })
             continue
@@ -879,22 +1216,25 @@ def parse_line_items(text, source_block="main"):
         # Standalone-Betrag nach MPF ohne Betrag (OCR-Zeilenumbruch: "1.94" auf eigener Zeile)
         if (current["_hts_rows"] and current["_hts_rows"][-1]["htsus_no"] == "MPF"
                 and current["_hts_rows"][-1]["duty_amount"] is None):
-            m_amt = re.match(r"^\s*([\d,]+\.\d{2})\s*$", line)
+            m_amt = re.match(r"^\s*([\d,]+[.,]\d{2})\s*$", line)
             if m_amt:
-                current["_hts_rows"][-1]["duty_amount"] = m_amt.group(1)
-                current["mpf_amount"] = m_amt.group(1)
+                _amt_val = _norm_amount(m_amt.group(1))
+                current["_hts_rows"][-1]["duty_amount"] = _amt_val
+                current["mpf_amount"] = _amt_val
                 continue
 
         m_hmf = HMF_RE.search(line)
         if m_hmf:
-            current["hmf_rate"]   = m_hmf.group(1)
-            current["hmf_amount"] = m_hmf.group(2)
+            _hmf_rate = _norm_rate(m_hmf.group(1))
+            _hmf_amt  = _norm_amount(m_hmf.group(2))
+            current["hmf_rate"]   = _hmf_rate
+            current["hmf_amount"] = _hmf_amt
             current["_hts_rows"].append({
                 "htsus_no":     "HMF",
                 "gross_weight": None,
                 "net_quantity": None,
-                "htsus_rate":   m_hmf.group(1),
-                "duty_amount":  m_hmf.group(2),
+                "htsus_rate":   _hmf_rate,
+                "duty_amount":  _hmf_amt,
                 "entered_value": None,
             })
             continue
@@ -902,10 +1242,11 @@ def parse_line_items(text, source_block="main"):
         # Standalone-Betrag nach HMF ohne Betrag (OCR-Zeilenumbruch)
         if (current["_hts_rows"] and current["_hts_rows"][-1]["htsus_no"] == "HMF"
                 and current["_hts_rows"][-1]["duty_amount"] is None):
-            m_amt = re.match(r"^\s*([\d,]+\.\d{2})\s*$", line)
+            m_amt = re.match(r"^\s*([\d,]+[.,]\d{2})\s*$", line)
             if m_amt:
-                current["_hts_rows"][-1]["duty_amount"] = m_amt.group(1)
-                current["hmf_amount"] = m_amt.group(1)
+                _amt_val = _norm_amount(m_amt.group(1))
+                current["_hts_rows"][-1]["duty_amount"] = _amt_val
+                current["hmf_amount"] = _amt_val
                 continue
 
         m_invval = INVOICE_VALUE_RE.search(line)
@@ -1093,21 +1434,22 @@ def _save_extra_lines(conn, entry_id, line_items):
     return inserted
 
 
-def _parse_best(layout_text, plain_text, source_block, verbose=False):
-    """Führt parse_line_items mit beiden Extraktionsmodi durch und gibt das
-    Ergebnis mit mehr eindeutigen Positionsnummern zurück.
 
-    Hintergrund: pdfplumber's plain_text-Extraktion liest Zeilen in natürlicher
-    Lesereihenfolge und liefert für viele CBP Form 7501-Seiten HTSUS-Code + Rate +
+def _parse_best(layout_text, plain_text, source_block, verbose=False):
+    """Fuehrt parse_line_items mit beiden Extraktionsmodi durch und gibt das
+    Ergebnis mit mehr eindeutigen Positionsnummern zurueck.
+
+    Hintergrund: pdfplumber's plain_text-Extraktion liest Zeilen in natuerlicher
+    Lesereihenfolge und liefert fuer viele CBP Form 7501-Seiten HTSUS-Code + Rate +
     Betrag auf einer Zeile. Bei manchen Seiten trennt die Extraktion die Spalten
     aber auf, sodass Rate und Betrag auf anderen Zeilen landen und nicht mehr
-    per Regex matched werden. layout_text (layout=True) erhält die horizontale
-    Position der Zeichen und hält zusammengehörige Felder auf derselben Textzeile.
+    per Regex matched werden. layout_text (layout=True) erhaelt die horizontale
+    Position der Zeichen und haelt zusammengehoerige Felder auf derselben Textzeile.
     Da nicht vorhergesagt werden kann, welcher Modus besser passt, werden beide
     versucht und das ergiebigere Ergebnis verwendet."""
     items_l = parse_line_items(layout_text or "", source_block=source_block)
     items_p = parse_line_items(plain_text or "", source_block=source_block)
-    # Anzahl eindeutig erkannter Positionsnummern als Qualitätsmaß
+    # Anzahl eindeutig erkannter Positionsnummern als Qualitaetsmass
     nos_l = {i.get("line_no") for i in items_l if i.get("line_no")}
     nos_p = {i.get("line_no") for i in items_p if i.get("line_no")}
     if len(nos_l) >= len(nos_p):
@@ -1115,16 +1457,16 @@ def _parse_best(layout_text, plain_text, source_block, verbose=False):
     else:
         chosen, mode = items_p, "plain"
     if verbose:
-        print(f"    layout_text → {len(items_l)} Einträge, {len(nos_l)} Pos-Nr. | "
-              f"plain_text → {len(items_p)} Einträge, {len(nos_p)} Pos-Nr. "
+        print(f"    layout_text -> {len(items_l)} Eintraege, {len(nos_l)} Pos-Nr. | "
+              f"plain_text -> {len(items_p)} Eintraege, {len(nos_p)} Pos-Nr. "
               f"| verwendet: {mode}")
     return chosen
 
 
 def _assign_orphan_fees(items):
-    """Weist Gebühren-Zeilen (htsus_no='HMF'/'MPF') ohne line_no der zuletzt
+    """Weist Gebuehren-Zeilen (htsus_no='HMF'/'MPF') ohne line_no der zuletzt
     bekannten line_no zu. Tritt auf wenn eine Position mit 'SEE NEXT PAGE(S)'
-    endet und die Gebühren am Anfang der Folgeseite stehen."""
+    endet und die Gebuehren am Anfang der Folgeseite stehen."""
     last_line_no = None
     for item in items:
         ln = item.get("line_no")
@@ -1143,16 +1485,15 @@ def process_pdf(path, conn, verbose=False):
     oder Positionen fehlen."""
     summary = []
     basename = os.path.basename(path)
-    last_real_entry_id = None   # letzter erfolgreich identifizierter Entry
+    last_real_entry_id = None
     last_real_entry_no = None
 
-    # Hilfsfunktion: Entry No. aus beliebigem Seitentext extrahieren
     def _find_entry_no_in_text(text):
-        """Sucht Entry No. im Format 'U52-1651637-2' oder 'U5216516372' (ohne Bindestriche)."""
+        """Sucht Entry No. im Format 'U52-1651637-2' oder 'U5216516372'."""
         m = re.search(r"(?<![\w])([A-Z0-9]{3}-\d{4,8}-\d)(?![\w-])", text)
         if m:
             return m.group(1)
-        m = re.search(r"(?<!\d)([A-Z]\d{10})(?!\d)", text)
+        m = re.search(r"(?<![A-Z0-9])([A-Z]\d{10})(?!\d)", text)
         if m:
             r = m.group(1)
             return f"{r[0:3]}-{r[3:10]}-{r[10]}"
@@ -1162,6 +1503,28 @@ def process_pdf(path, conn, verbose=False):
         if verbose:
             print(f"\n=== {basename}: {len(pdf.pages)} Seite(n) gesamt ===")
         cbp_pages = find_cbp_pages(pdf, verbose=verbose, pdf_path=path)
+
+        # ── Fallback: Image-only PDF ──────────────────────────────────────
+        # Wenn kein CBP gefunden: zweiter Durchlauf mit force_ocr_all=True.
+        # Ursache: pdfplumber liefert bei manchen Scan-PDFs Bild-Metadaten
+        # (z.B. "Form1", "Background") als vermeintlich gültigen Text zurück,
+        # sodass der OCR-Trigger (leerer Text) nicht ausgelöst wird.
+        # force_ocr_all prüft JEDE Seite per OCR und nimmt das bessere Ergebnis.
+        if not cbp_pages and _OCR_AVAILABLE and path:
+            if verbose:
+                print("  [INFO] Erster Durchlauf: keine CBP-Seiten. "
+                      "Starte Bild-Fallback (force_ocr_all=True) ...")
+            cbp_pages = find_cbp_pages(
+                pdf, verbose=verbose, pdf_path=path, force_ocr_all=True
+            )
+            if verbose:
+                if cbp_pages:
+                    print(f"  [INFO] Bild-Fallback erfolgreich: "
+                          f"{len(cbp_pages)} Seite(n) erkannt.")
+                else:
+                    print("  [WARN] Bild-Fallback: keine CBP-Seiten erkannt. "
+                          "Prüfe ob Tesseract/PyMuPDF installiert und PDF lesbar ist.")
+
         if not cbp_pages:
             if verbose:
                 print("  [WARN] Keine CBP Form 7501-Seiten gefunden.")
@@ -1170,7 +1533,6 @@ def process_pdf(path, conn, verbose=False):
             print(f"  -> {len(cbp_pages)} CBP-Seite(n) erkannt, "
                   f"{sum(1 for p in cbp_pages if not p['is_continuation'])} Hauptseite(n), "
                   f"{sum(1 for p in cbp_pages if p['is_continuation'])} Continuation Sheet(s)")
-        # Scanne ALLE Seiten (inkl. Rechnungsseiten) fuer Entry-No.-Fallback
         _invoice_entry_no = None
         for _pg in pdf.pages:
             _pt = _pg.extract_text() or ""
@@ -1186,6 +1548,19 @@ def process_pdf(path, conn, verbose=False):
         for doc_idx, doc in enumerate(docs, start=1):
             main = doc["main"]
             header = parse_header(main["layout_text"], main["plain_text"]) if main else {}
+            if not header.get("filer_code_entry_no"):
+                for _cont in doc.get("continuations", []):
+                    _cont_text = (_cont.get("layout_text") or "") + "\n" + \
+                                 (_cont.get("plain_text") or "")
+                    _cm = re.search(
+                        r"(?<![\w])([A-Z0-9]{3}[-~_]\d{4,8}[-~_]\d)(?![\w])",
+                        _cont_text)
+                    if _cm:
+                        header["filer_code_entry_no"] = _normalize_entry_no(_cm.group(1))
+                        if verbose:
+                            print(f"    [Fallback] Entry-No. aus Continuation Sheet: "
+                                  f"{header['filer_code_entry_no']}")
+                        break
             for f in HEADER_FIELDS.values():
                 header.setdefault(f, None)
             for f in ("total_entered_value", "mpf_total", "duty_total", "tax_total",
@@ -1214,15 +1589,10 @@ def process_pdf(path, conn, verbose=False):
                 if verbose:
                     print(f"    -> {len(block_items)} Position(en) erkannt")
 
-            # Gebühren ohne line_no (Seitenübergang) der letzten bekannten Position zuweisen
             _assign_orphan_fees(line_items)
 
             entry_no = header.get("filer_code_entry_no")
 
-            # --- Orphan-Erkennung: Dokument ohne Entry-Nr. = faelschlich als
-            # Hauptseite eingestuftes Continuation Sheet. Positionen werden dem
-            # zuletzt gespeicherten echten Entry zugeordnet statt als separates
-            # "UNKNOWN"-Dokument abgelegt zu werden. ---
             if not entry_no and last_real_entry_id is not None:
                 if verbose:
                     print(f"  [Dok {doc_idx}] KEIN Filer Code / Entry No gefunden - "
@@ -1242,7 +1612,7 @@ def process_pdf(path, conn, verbose=False):
             header["filer_code_entry_no"] = entry_no
 
             first_page_index = (main["index"] if main
-                                 else doc["continuations"][0]["index"])
+                                else doc["continuations"][0]["index"])
             entry_id, n_lines = save_document(
                 conn, basename, first_page_index + 1, header, line_items)
             if entry_id and not entry_no.startswith("UNKNOWN_"):
@@ -1285,6 +1655,7 @@ def main():
     pdfs = collect_pdfs(args.input)
     if not pdfs:
         print(f"Keine PDF-Dateien gefunden unter: {args.input}")
+        import sys
         sys.exit(1)
 
     conn = get_connection(args.db)
@@ -1309,4 +1680,10 @@ def main():
             total_entries += 1
             total_lines += inserted_lines
 
-    conn.co
+    conn.commit()
+    conn.close()
+    print(f"\nGesamt: {total_entries} Eintraege, {total_lines} Warenpositionen neu gespeichert")
+
+
+if __name__ == "__main__":
+    main()

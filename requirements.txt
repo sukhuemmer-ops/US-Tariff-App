@@ -1,0 +1,15 @@
+# CBP7501 App – Python-Abhängigkeiten
+# Installieren: pip install -r requirements.txt
+
+# ── Kern-Pakete ──────────────────────────────────────────────
+pdfplumber>=0.11.0
+openpyxl>=3.1.0
+tkinterdnd2>=0.3.0
+
+# ── OCR / Bild-PDFs ─────────────────────────────────────────
+Pillow>=10.0.0
+pdf2image>=1.17.0
+pytesseract>=0.3.10
+
+# ── PyInstaller (nur für EXE-Build, nicht für Laufzeit) ─────
+pyinstaller>=6.0.0
