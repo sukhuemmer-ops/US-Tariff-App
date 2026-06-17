@@ -855,7 +855,7 @@ _NAV_ITEMS_PLAUSI = [
 _NAV_ITEMS_STAMM = [
     ("zuord_mat_kd",      "🗂", "ZuOrd-MAT-KD",  "Stammdaten – Zuordnung Material / Kunde"),
     ("db_tariff",         "📋", "db_Tariff",      "Stammdaten – Tariff Datenbank"),
-    ("htsus_claim_cfg",   "⚙️", "HTSUS Claim",   "HTSUS Claim Konfiguration – Erstattungsfähig?"),
+    ("htsus_claim_cfg",   "⚙️", "HTS-Config",    "HTSUS Claim Konfiguration – Erstattungsfähig?"),
 ]
 
 # db_Tariff – Spalten für die Summenzeile (alle numerischen Betragsfelder)
@@ -6064,9 +6064,11 @@ class App:
         tv_frame.pack(fill="both", expand=True)
         vsb = ttk.Scrollbar(tv_frame, orient="vertical")
         hsb = ttk.Scrollbar(tv_frame, orient="horizontal")
+        _DBT_ALL_COLS = list(DB_TARIFF_COLUMNS) + ["abgl_differenz", "abgl_ursache"]
+        self._dbt_all_cols = _DBT_ALL_COLS
         self._dbt_tv = ttk.Treeview(
             tv_frame,
-            columns=DB_TARIFF_COLUMNS,
+            columns=_DBT_ALL_COLS,
             show="headings",
             yscrollcommand=vsb.set,
             xscrollcommand=hsb.set,
@@ -6088,6 +6090,12 @@ class App:
                                  command=lambda c=col: self._dbt_sort(c))
             w = _wide.get(col, 90)
             self._dbt_tv.column(col, width=w, minwidth=50, stretch=False, anchor="w")
+        self._dbt_tv.heading("abgl_differenz", text="Differenz (USD)",
+                             command=lambda: self._dbt_sort("abgl_differenz"))
+        self._dbt_tv.column("abgl_differenz", width=120, minwidth=60, stretch=False, anchor="e")
+        self._dbt_tv.heading("abgl_ursache", text="Ursache",
+                             command=lambda: self._dbt_sort("abgl_ursache"))
+        self._dbt_tv.column("abgl_ursache", width=320, minwidth=80, stretch=False, anchor="w")
 
         self._dbt_tv.tag_configure("odd",  background="#F7F9FC")
         self._dbt_tv.tag_configure("even", background="white")
@@ -6102,8 +6110,9 @@ class App:
                                    background="#FEF9C3", foreground="#78350F")
 
         # Abgleich-Zustand
-        self._dbt_abgleich_active = False
-        self._dbt_abgleich_map    = {}   # norm_entry → "ok" | "fehlt" | "nur_db"
+        self._dbt_abgleich_active      = False
+        self._dbt_abgleich_map         = {}   # norm_entry → "ok" | "fehlt" | "nur_db"
+        self._dbt_abgleich_row_details = {}   # norm_entry → (diff_str, ursache_str)
 
         self._dbt_ensure_db()
         self._load_dbt_data()
@@ -6360,10 +6369,13 @@ class App:
 
     def _hcc_add_row(self):
         """Neue leere Zeile hinzufügen."""
-        dlg = tk.Toplevel(self)
+        dlg = tk.Toplevel(self.root)
         dlg.title("Neue HTSUS-Nr. hinzufügen")
         dlg.resizable(False, False)
+        dlg.transient(self.root)
         dlg.grab_set()
+        dlg.lift()
+        dlg.focus_force()
         dlg.configure(bg=MAIN_BG)
 
         fields = [("HTSUS-Nr. *", "htsus_no"),
@@ -7182,17 +7194,40 @@ class App:
             self._dbt_toggle_panel()
 
     def _dbt_filter(self, *_):
+        import re as _re
         term = self._dbt_search_var.get().lower().strip()
         col_filters = self._dbt_get_col_filters()
         tv = self._dbt_tv
         for item in tv.get_children():
             tv.delete(item)
         count = 0
+        ab_act     = getattr(self, "_dbt_abgleich_active", False)
+        amap       = getattr(self, "_dbt_abgleich_map", {})
+        row_detail = getattr(self, "_dbt_abgleich_row_details", {})
+        _idx_ed = DB_TARIFF_COLUMNS.index("entry_document")
+        _idx_en = DB_TARIFF_COLUMNS.index("entry_no_new")
         for row in getattr(self, "_dbt_all_rows", []):
             if not _row_passes(row, col_filters, term):
                 continue
-            tag = "even" if count % 2 == 0 else "odd"
-            tv.insert("", "end", values=row, tags=(tag,))
+            # Abgleich-Tag + extra Spalten
+            ab_tag = ""
+            diff_str   = ""
+            ursache_str = ""
+            if ab_act:
+                _ed  = str(row[_idx_ed] or "").strip()
+                _en  = str(row[_idx_en] or "").strip()
+                nkey = _re.sub(r'\D', '', _ed) if _ed else _re.sub(r'\D', '', _en)
+                ab_status = amap.get(nkey, "")
+                if ab_status == "ok":
+                    ab_tag = "abgleich_ok"
+                elif ab_status in ("fehlt",):
+                    ab_tag = "abgleich_fehlt"
+                elif ab_status == "nur_db":
+                    ab_tag = "abgleich_nur_db"
+                diff_str, ursache_str = row_detail.get(nkey, ("", ""))
+            tag = ab_tag if ab_tag else ("even" if count % 2 == 0 else "odd")
+            extended_row = tuple(row) + (diff_str, ursache_str)
+            tv.insert("", "end", values=extended_row, tags=(tag,))
             count += 1
         total = len(getattr(self, "_dbt_all_rows", []))
         active = len(col_filters)
@@ -7208,6 +7243,10 @@ class App:
         else:
             self._dbt_sort_col = col
             self._dbt_sort_rev = False
+        # Abgleich-Spalten sind nicht in _dbt_all_rows – nur neu rendern
+        if col in ("abgl_differenz", "abgl_ursache"):
+            self._dbt_filter()
+            return
         idx = DB_TARIFF_COLUMNS.index(col)
         self._dbt_all_rows.sort(
             key=lambda r: (r[idx] is None, str(r[idx] or "").lower()),
@@ -7509,9 +7548,38 @@ class App:
                                         pady=(6, 0), in_=self._dbt_outer)
             self._dbt_tv_frame.pack(fill="both", expand=True, in_=self._dbt_outer)
 
-        # ── 5. Abgleich-Map + Status ──────────────────────────────────────
-        self._dbt_abgleich_map    = amap
-        self._dbt_abgleich_active = True
+        # ── 5. Abgleich-Map + Row-Details + Status ────────────────────────
+        # Zeilenlevel-Details für Differenz/Ursache-Spalten aufbauen
+        row_details = {}
+        for it in diff_list:
+            nkey = _norm(it["orig"])
+            sign = "+" if it["diff"] > 0 else ""
+            row_details[nkey] = (
+                f"{sign}{it['diff']:,.2f}",
+                it["reason"]
+            )
+        for it in fehlt_list:
+            nkey = _norm(it["orig"])
+            if it["hts_vals"]:
+                urs = "HTS-Beträge vorhanden, 'Summe TAX' fehlt"
+            elif it["tax_vol"]:
+                urs = "Tax Volume vorhanden, 'Summe TAX' leer"
+            else:
+                urs = "Alle Steuerfelder leer – Entry unvollständig"
+            row_details[nkey] = ("–", urs)
+        for orig, cv in nicht_in_db_list:
+            nkey = _norm(orig)
+            row_details[nkey] = ("–", "Entry nicht in db_Tariff")
+        for orig, dach, sv in nur_db_list:
+            nkey = _norm(orig)
+            row_details[nkey] = ("–", "Kein Claim-Report-Match")
+        for orig, sv in ok_list:
+            nkey = _norm(orig)
+            row_details[nkey] = ("0,00", "OK – Übereinstimmung")
+
+        self._dbt_abgleich_row_details = row_details
+        self._dbt_abgleich_map         = amap
+        self._dbt_abgleich_active      = True
         self._dbt_filter()
 
         nicht_in_db_cnt = len(nicht_in_db_list)
@@ -7525,8 +7593,9 @@ class App:
 
     def _dbt_reset_abgleich(self):
         """Setzt Abgleich-Kennzeichnung und Detail-Panel zurück."""
-        self._dbt_abgleich_active = False
-        self._dbt_abgleich_map    = {}
+        self._dbt_abgleich_active      = False
+        self._dbt_abgleich_map         = {}
+        self._dbt_abgleich_row_details = {}
         # Detail-Panel verstecken
         if self._dbt_detail_outer.winfo_ismapped():
             self._dbt_detail_outer.pack_forget()
@@ -8429,7 +8498,6 @@ class App:
             return
         try:
             conn = sqlite3.connect(DB_PATH)
-            # Entry aus DB entfernen damit sauber neu importiert wird
             cur = conn.cursor()
             cur.execute(
                 "SELECT id FROM entries WHERE filer_code_entry_no = ?",
@@ -8448,7 +8516,6 @@ class App:
             return
 
         self._adb_status_var.set(f"Lese erneut: {fname} …")
-        # Nach dem Batch-Import Abgleich automatisch neu ausführen
         self._abgleich_pending_refresh = True
         self._process_pdf_batch([arch_path])
 
@@ -8487,7 +8554,6 @@ class App:
             import openpyxl
             from datetime import datetime as _dt
             wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            # Sheet "Report" suchen (case-insensitive)
             sheet_name = None
             for n in wb.sheetnames:
                 if n.strip().lower() == "report":
@@ -8497,10 +8563,7 @@ class App:
                 sheet_name = wb.sheetnames[0]
             ws = wb[sheet_name]
             rows = list(ws.iter_rows(values_only=True))
-
-            # Header in Zeile 6 (index 5), Daten ab Zeile 7 (index 6)
             data_rows = rows[6:]
-
             conn = sqlite3.connect(DB_PATH)
             cur = conn.cursor()
             inserted = 0
@@ -8610,6 +8673,24 @@ if __name__ == "__main__":
     _LOG = _os.path.join(_os.path.dirname(_os.path.abspath(sys.executable if getattr(sys, "frozen", False) else __file__)), "startup_error.log")
     try:
         from tkinterdnd2 import TkinterDnD
+        root = TkinterDnD.Tk()
+    except Exception:
+        import tkinter as tk
+        root = tk.Tk()
+    try:
+        app = App(root)
+        root.mainloop()
+    except Exception as _msg:
+        _err = _tb.format_exc()
+        with open(_LOG, "w", encoding="utf-8") as _lf:
+            _lf.write(_err)
+        try:
+            import tkinter.messagebox as _mb2
+            _mb2.showerror("Startup-Fehler",
+                           f"{str(_msg)[:1500]}\n\nDetails: {_LOG}")
+        except Exception:
+            pass
+ort TkinterDnD
         root = TkinterDnD.Tk()
     except Exception:
         import tkinter as tk

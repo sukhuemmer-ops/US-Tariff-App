@@ -23,3 +23,6 @@ pdf_archive/
 
 # Logs
 startup_error.log
+
+# Temporäre Hilfsdateien
+_missing_tail.py
