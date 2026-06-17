@@ -8690,21 +8690,3 @@ if __name__ == "__main__":
                            f"{str(_msg)[:1500]}\n\nDetails: {_LOG}")
         except Exception:
             pass
-ort TkinterDnD
-        root = TkinterDnD.Tk()
-    except Exception:
-        import tkinter as tk
-        root = tk.Tk()
-    try:
-        app = App(root)
-        root.mainloop()
-    except Exception as _msg:
-        _err = _tb.format_exc()
-        with open(_LOG, "w", encoding="utf-8") as _lf:
-            _lf.write(_err)
-        try:
-            import tkinter.messagebox as _mb2
-            _mb2.showerror("Startup-Fehler",
-                           f"{str(_msg)[:1500]}\n\nDetails: {_LOG}")
-        except Exception:
-            pass
