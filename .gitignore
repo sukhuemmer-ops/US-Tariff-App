@@ -2,3 +2,24 @@ sap_settings.ini
 __pycache__/
 *.pyc
 .env
+
+# Datenbanken
+*.db
+*.db-journal
+
+# Python-Umgebung
+venv/
+
+# Build-Artefakte
+build/
+dist/
+*.spec
+
+# Excel-Datendateien
+*.xlsx
+
+# PDF-Archiv
+pdf_archive/
+
+# Logs
+startup_error.log

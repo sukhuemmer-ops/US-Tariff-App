@@ -1,9 +1,14 @@
 Traceback (most recent call last):
-  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 3723, in <module>
-    App(_root)
-  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 939, in __init__
-    self._build_import_tab()
-  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 1225, in _build_import_tab
-    self.drop_zone.dnd_bind("<<Drop>>", self._on_drop)
-                                        ^^^^^^^^^^^^^
-AttributeError: 'App' object has no attribute '_on_drop'
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 8576, in <module>
+    app = App(root)
+          ^^^^^^^^^
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 1650, in __init__
+    self._build_auswertung_tab()
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 6577, in _build_auswertung_tab
+    self._aus_load()
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 6761, in _aus_load
+    self._aus_filter()
+  File "C:\DEV\Tariff-Database\cbp7501_app.py", line 6769, in _aus_filter
+    for ci, vals in cf.items():
+                    ^^^^^^^^
+AttributeError: 'list' object has no attribute 'items'
